@@ -1,0 +1,23 @@
+# Build artifacts
+*.o
+*.elf
+*.bin
+*.hex
+*.map
+
+# Arduino IDE
+.build/
+build/
+
+# PlatformIO
+.pio/
+.vscode/
+
+# IDE files
+*.swp
+*.swo
+*~
+.DS_Store
+
+# SEB internal
+.seb/
