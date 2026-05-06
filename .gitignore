@@ -21,3 +21,16 @@ build/
 
 # SEB internal
 .seb/
+SEB.MD
+
+# Local-only directories
+Downloads/
+proffie_wavs/
+
+# Debug / dev notes
+UART_DEBUG_GUIDE.md
+UART_DEBUG_STATUS.md
+PROFFIE_COMPILE_FIXES.md
+
+# Audio files (user-managed, not versioned)
+*.wav

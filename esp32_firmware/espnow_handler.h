@@ -26,15 +26,14 @@ public:
   void endTransmission();
   bool hasReceivedData();
   bool receivePacket(ESPNowPacket* pkt);
-  
+
 private:
   static void onDataRecv(const esp_now_recv_info* recv_info, const uint8_t* data, int len);
-  static void onDataSent(const wifi_tx_info_t* tx_info, esp_now_send_status_t status);
-  
+
   uint8_t peerMAC[6];
   uint16_t txSequenceNum;
   bool isPaired;
-  
+
   static ESPNowPacket rxBuffer;
   static bool rxDataAvailable;
 };

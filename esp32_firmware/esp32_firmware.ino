@@ -10,9 +10,11 @@
 #include "espnow_handler.h"
 
 // Pin definitions for Arduino Nano ESP32
-#define RX_PIN 0   // RX0 - Connected to Proffie TX
-#define TX_PIN 1   // TX1 - Connected to Proffie RX
+#define RX_PIN D2  // Arduino pin 2 = GPIO5 - Connected to Proffie TX
+#define TX_PIN D3  // Arduino pin 3 = GPIO6 - Connected to Proffie RX
 #define LED_PIN 13 // Built-in LED on Arduino Nano ESP32
+
+// #define UART_VERBOSE
 
 // Global handlers
 UARTHandler uartHandler;
@@ -31,6 +33,7 @@ DeviceState currentState = STATE_IDLE;
 
 void setup() {
   Serial.begin(115200);
+  delay(1500);  // Give USB CDC time to connect before printing
   pinMode(LED_PIN, OUTPUT);
   
   // Initialize UART to Proffie
@@ -64,36 +67,48 @@ void loop() {
 
 void handleProffieData() {
   UARTPacket pkt;
-  if (uartHandler.receivePacket(&pkt)) {
-    switch (pkt.type) {
-      case PKT_START_TRANSMIT:
-        currentState = STATE_RECEIVING_FROM_PROFFIE;
-        espnowHandler.startTransmission();
+  memset(&pkt, 0, sizeof(pkt));  // zero-init so garbage doesn't corrupt validation
+  bool got = uartHandler.receivePacket(&pkt);
+#ifdef UART_VERBOSE
+  // Print regardless of success/failure so we can see what arrived
+  Serial.printf("recv ok=%d type=0x%02X len=%d end=0x%02X cs_ok=%s\n",
+    got, pkt.type, pkt.length, pkt.end,
+    uartHandler.validatePublic(&pkt) ? "YES" : "NO");
+#endif
+  if (!got) return;
+  switch (pkt.type) {
+    case 0xFE:  // Diagnostic test packet from Proffie
+      Serial.print("Received test packet from Proffie (type=0xFE, payload=");
+      for (int i = 0; i < pkt.length && i < 8; i++) Serial.print((char)pkt.payload[i]);
+      Serial.println(")");
+      break;
+
+    case PKT_START_TRANSMIT:
+      currentState = STATE_RECEIVING_FROM_PROFFIE;
+      espnowHandler.startTransmission();
+      uartHandler.sendAck();
+      Serial.println("Started receiving from Proffie");
+      break;
+
+    case PKT_MOTION_DATA:
+      if (currentState == STATE_RECEIVING_FROM_PROFFIE) {
+        espnowHandler.sendMotionPacket(pkt.payload, pkt.length);
         uartHandler.sendAck();
-        Serial.println("Started receiving from Proffie");
-        break;
-        
-      case PKT_MOTION_DATA:
-        if (currentState == STATE_RECEIVING_FROM_PROFFIE) {
-          // Forward motion data via ESP-NOW
-          espnowHandler.sendMotionPacket(pkt.payload, pkt.length);
-          uartHandler.sendAck();
-        }
-        break;
-        
-      case PKT_END_TRANSMIT:
-        if (currentState == STATE_RECEIVING_FROM_PROFFIE) {
-          espnowHandler.endTransmission();
-          currentState = STATE_IDLE;
-          uartHandler.sendAck();
-          Serial.println("Transmission complete");
-        }
-        break;
-        
-      default:
-        Serial.printf("Unknown packet type: 0x%02X\n", pkt.type);
-        break;
-    }
+      }
+      break;
+
+    case PKT_END_TRANSMIT:
+      if (currentState == STATE_RECEIVING_FROM_PROFFIE) {
+        espnowHandler.endTransmission();
+        currentState = STATE_IDLE;
+        uartHandler.sendAck();
+        Serial.println("Transmission complete");
+      }
+      break;
+
+    default:
+      Serial.printf("Unknown packet type: 0x%02X\n", pkt.type);
+      break;
   }
 }
 

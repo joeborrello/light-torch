@@ -1,176 +1,158 @@
-# Motion Capture and Playback System
+# Light Torch — Motion Capture & Playback System
 
-A dual-device system for capturing motion patterns via IMU and transmitting them wirelessly for playback on a second device.
+A two-device system where motion performed on one device is wirelessly transmitted to and played back on a second device. Each device has a Proffieboard V3.9 (with onboard IMU) paired with an ESP32 for wireless communication. Both devices generate real-time light and sound in response to motion at all times.
 
-## System Overview
+## How It Works
 
-**Device 1 (Transmitter):**
-- Proffie V3.9 board with LSM6DS3 IMU
-- Records 10-15 seconds of motion data
-- Generates real-time LED (RGBW) and audio patterns based on motion
-- Transmits recorded sequence via ESP32 (ESP-NOW) when user shakes the device
-- Switches to receive mode after transmission
+1. Move device A — LEDs and audio respond live to motion intensity
+2. Set it down and hold still — the motion sequence is automatically recorded and transmitted to device B via ESP-NOW
+3. Device A shows a white flash on transmission, then a slow white pulse while waiting
+4. Device B pulses red — pick it up to trigger playback of device A's motion
+5. Both devices can record and transmit to each other indefinitely
 
-**Device 2 (Receiver):**
-- Identical hardware setup
-- Receives motion sequence via ESP32
-- Plays back LED and audio patterns
-- Switches to transmit mode after playback
+---
 
-## Hardware Requirements
+## Hardware (per device)
 
-### Per Device:
-- 1x Proffie V3.9 board (STM32L433 with onboard LSM6DS3 IMU)
-- 1x ESP32 development board
-- 1x RGBW LED strip (WS2812-compatible, 60 LEDs recommended)
-- 1x Speaker (4-8Ω)
-- 1x 3.7V Li-ion battery
-- Jumper wires
+| Component | Part |
+|---|---|
+| Main board | Proffieboard V3.9 (STM32L452, onboard LSM6DS3 IMU) |
+| Wireless bridge | Arduino Nano ESP32 |
+| LED strip | WS2812-compatible RGBW, 144 LEDs |
+| Speaker | 8Ω recommended |
+| Power | 3.7V LiPo battery |
+
+---
 
 ## Wiring
 
-See `docs/wiring.md` for complete wiring diagrams.
+### Proffie ↔ ESP32 (UART)
 
-**Quick Reference:**
+| Proffie pad | ESP32 pin | Notes |
+|---|---|---|
+| TX (PC1) | D2 | Use Arduino pin label D2, not raw GPIO |
+| RX (PC0) | D3 | Use Arduino pin label D3, not raw GPIO |
+| GND | GND | Must share ground |
 
-**Proffie → ESP32:**
-- TX (PA9, pin 9) → ESP32 GPIO16 (RX2)
-- RX (PA10, pin 10) → ESP32 GPIO17 (TX2)
-- GND → ESP32 GND
+> **Important:** Proffie Serial3 (LPUART1) maps to the labeled TX/RX pads (PC1/PC0). Do not use Serial1 or Serial2.
 
-**Proffie → LED Strip:**
-- Data1 (PA7, pin 0) → LED DIN
-- 5V → LED VCC
-- GND → LED GND
+### Proffie → LED Strip
 
-**Proffie → Speaker:**
-- Speaker+ / Speaker- terminals → 4-8Ω speaker
+| Proffie | LED Strip |
+|---|---|
+| Data1 (bladePin 0) | DIN |
+| Batt+ | +V |
+| GND | GND |
 
-**LSM6DS3 (onboard):**
-- I2C: SDA=pin 14, SCL=pin 13
+### Speaker
+
+Connect to Proffie **SPKR+** and **SPKR−** pads.
+
+---
 
 ## Software Setup
 
-### Proffie Firmware
+### Proffie (ProffieOS)
 
-1. Install Arduino IDE with STM32 board support
-2. Open `proffie_firmware/proffie_firmware.ino`
-3. Install required libraries:
-   - Wire (I2C)
-   - Adafruit_NeoPixel (for RGBW LEDs)
-4. Select board: **STM32L4 → Generic STM32L4 series → Proffie V3**
-5. Upload to Proffie board
+1. Install [Arduino IDE](https://www.arduino.cc/en/software)
+2. Add the Proffieboard board package — follow the [ProffieOS setup guide](https://fredrik.hubbe.net/lightsaber/proffieos.html)
+3. Select **Tools → Board → Proffieboard V3**
+4. Open `ProffieOS-v8.10/ProffieOS/ProffieOS.ino`
+5. Compile and upload
 
-### ESP32 Firmware
+The config file (`config/motion_capture_config.h`) and prop file (`props/saber_motion_capture_prop.h`) are already referenced by the included ProffieOS build.
 
-1. Install PlatformIO (VS Code extension or CLI)
-2. Navigate to `esp32_firmware/`
-3. Run: `platformio run --target upload`
-4. Or open in PlatformIO IDE and click Upload
+> **Windows DFU upload:** If the upload fails, use [Zadig](https://zadig.akeo.ie/) to install the WinUSB driver for the Proffieboard DFU device. Double-tap the RESET button to enter bootloader mode.
+
+### ESP32 (Arduino Nano ESP32)
+
+1. Install Arduino IDE (same instance as above is fine)
+2. Add the Arduino Nano ESP32 board package via Boards Manager
+3. **Tools → USB CDC On Boot → Enabled** (required for Serial Monitor)
+4. Open `esp32_firmware/esp32_firmware.ino`
+5. Compile and upload
+
+> **Windows DFU upload:** Same Zadig WinUSB swap applies. Double-tap RESET to enter bootloader.
+
+---
+
+## SD Card Audio (Optional)
+
+Without an SD card, a built-in beeper generates pentatonic arpeggiation in response to motion. With an SD card, WAV files replace the beeper.
+
+**Format the card:** FAT32, ≤32 GB
+
+**Folder structure** (folder name must match exactly):
+```
+motion_capture/
+├── hum.wav          ← looping ambient drone
+├── swing01.wav      ← slowest swing sound
+├── swing02.wav
+│   ...
+└── swing08.wav      ← fastest swing sound
+```
+
+**WAV specs:** 44100 Hz, 16-bit, mono
+
+The swing file played is selected by speed: slow motion → `swing01`, fast motion → `swing08`. The number of files is detected automatically — fewer than 8 is fine.
+
+---
+
+## Behavior Reference
+
+### LED States
+
+| State | LED |
+|---|---|
+| Idle | Slow RGBW color cycle |
+| Moving | Red → blue gradient by speed |
+| Just transmitted | Rapid white flash (2 s) |
+| Awaiting reply | Slow white pulse |
+| Message waiting for pickup | Rapid red pulse |
+| Sync mode toggle | Solid green flash (500 ms) |
+
+### Sync Mode
+
+Sustained vigorous motion (>300 dps for 3 seconds) from idle toggles **sync mode** on or off with a green flash. In sync mode, devices play live simultaneously without recording or transmitting. Repeat the gesture to exit.
+
+### Timeouts
+
+All waiting states (awaiting reply, awaiting pickup) time out to idle after 5 minutes.
+
+---
 
 ## Configuration
 
-### Proffie (`proffie_firmware/config.h`):
-- `NUM_LEDS`: Number of LEDs in your strip (default: 60)
-- `LED_BRIGHTNESS`: LED brightness 0-255 (default: 128)
-- `RECORDING_DURATION_SEC`: Recording length in seconds (default: 10)
-- `SHAKE_THRESHOLD_G`: Shake detection sensitivity (default: 2.5g)
+Key thresholds in `ProffieOS-v8.10/ProffieOS/props/saber_motion_capture_prop.h`:
 
-### ESP32 (`esp32_firmware/platformio.ini`):
-- No configuration needed for broadcast mode
-- For paired mode, update `ESP32_PEER_MAC` in both devices' config
+| Constant | Default | Description |
+|---|---|---|
+| `MIN_SWING_SPEED` | 30 dps | Motion threshold for note/sound generation |
+| `RECORD_MIN_SPEED` | 80 dps | Motion threshold to trigger recording |
+| `MOTION_DEBOUNCE_MS` | 400 ms | Sustained motion required before recording starts |
+| `SYNC_TRIGGER_SPEED` | 300 dps | Vigorous motion threshold for sync mode toggle |
+| `SYNC_HOLD_MS` | 3000 ms | How long to sustain vigorous motion to toggle sync |
+| `STATIONARY_THRESHOLD` | 10 dps | Below this = considered stationary |
 
-## Usage
+---
 
-1. **Power on both devices**
-   - Both start in RECORDING mode automatically
-
-2. **Record motion on Device 1**
-   - Move the device around
-   - LEDs and audio respond in real-time to motion
-   - Recording buffer holds 10 seconds (rolling window)
-
-3. **Transmit to Device 2**
-   - Shake Device 1 rapidly (>2.5g acceleration)
-   - Device 1 transmits recorded sequence via ESP-NOW
-   - Device 1 enters RECEIVING mode
-
-4. **Playback on Device 2**
-   - Device 2 receives the sequence
-   - Plays back the same LED and audio patterns
-   - Device 2 enters RECORDING mode after playback
-
-5. **Repeat**
-   - Device 2 can now record and transmit back to Device 1
-
-## LED Patterns
-
-- **Idle**: Slow breathing effect (blue)
-- **Recording**: Pulsing green
-- **Transmitting**: Fast blinking yellow
-- **Receiving**: Slow blinking cyan
-- **Playback**: Motion-mapped colors (blue → green → yellow → red)
-
-## Audio Patterns
-
-- Tone frequency mapped to motion intensity: 200-2000 Hz
-- Higher motion = higher pitch
-
-## Troubleshooting
-
-**LSM6DS3 init failed:**
-- Check I2C wiring (SDA=14, SCL=13)
-- Verify I2C address is 0x6A (SA0 pin grounded on Proffie V3.9)
-
-**ESP32 not communicating:**
-- Check UART wiring (TX→RX, RX→TX, GND→GND)
-- Verify baud rate is 115200 on both sides
-- Check Serial Monitor for UART errors
-
-**LEDs not working:**
-- Verify LED_DATA_PIN matches your wiring (default: pin 0 = PA7)
-- Check 5V power supply to LED strip
-- Ensure common ground between Proffie and LED strip
-
-**No transmission between devices:**
-- Both ESP32s must be powered on
-- Check WiFi channel (default: channel 1)
-- Verify ESP-NOW is initialized (check ESP32 serial output)
-
-## File Structure
+## Repository Structure
 
 ```
-torch-project/
-├── proffie_firmware/
-│   ├── proffie_firmware.ino    # Main state machine
-│   ├── config.h                # Configuration constants
-│   ├── lsm6ds3_driver.h/cpp    # IMU driver
-│   ├── shake_detector.h/cpp    # Shake detection
-│   ├── motion_buffer.h/cpp     # Motion data buffer
-│   ├── led_patterns.h/cpp      # LED pattern generator
-│   ├── audio_tones.h/cpp       # Audio tone generator
-│   └── uart_comm.h/cpp         # UART communication
+light-torch/
+├── ProffieOS-v8.10/
+│   └── ProffieOS/
+│       ├── ProffieOS.ino                    ← open this in Arduino IDE
+│       ├── config/
+│       │   └── motion_capture_config.h      ← blade style & preset
+│       ├── props/
+│       │   └── saber_motion_capture_prop.h  ← state machine & all behavior
+│       └── functions/
+│           └── hold_peak.h                  ← modified ProffieOS file
 ├── esp32_firmware/
-│   ├── esp32_firmware.ino      # Main ESP32 sketch
-│   ├── uart_handler.h/cpp      # UART handler
-│   ├── espnow_handler.h/cpp    # ESP-NOW handler
-│   └── platformio.ini          # PlatformIO config
-├── common/
-│   └── uart_protocol.h         # Shared UART protocol
-├── docs/
-│   └── wiring.md               # Wiring diagrams
-└── README.md                   # This file
+│   ├── esp32_firmware.ino                   ← main ESP32 sketch
+│   ├── uart_handler.h / .cpp                ← UART bridge (Proffie ↔ ESP32)
+│   ├── espnow_handler.h / .cpp              ← ESP-NOW wireless
+│   └── uart_protocol.h                      ← shared packet format
+└── README.md
 ```
-
-## Technical Details
-
-- **IMU Sampling**: 50 Hz (20ms intervals)
-- **Motion Buffer**: 500 samples (10 seconds @ 50Hz) = ~8KB RAM
-- **UART Protocol**: 115200 baud, packet-based with checksums
-- **ESP-NOW**: Broadcast mode (FF:FF:FF:FF:FF:FF)
-- **LED Update Rate**: 50 Hz (synchronized with IMU)
-- **Audio Sample Rate**: Continuous tone generation via DAC
-
-## License
-
-MIT License - see LICENSE file for details

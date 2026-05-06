@@ -1,13 +1,12 @@
 #include "uart_handler.h"
 
 void UARTHandler::begin(uint8_t rxPin, uint8_t txPin) {
-  // Arduino Nano ESP32 uses Serial1 for RX0/TX1
   serial.begin(115200, SERIAL_8N1, rxPin, txPin);
-  serial.setTimeout(100);
+  serial.setTimeout(500);  // 500ms — generous timeout for chunked writes from LPUART1
 }
 
 bool UARTHandler::available() {
-  return serial.available() >= sizeof(UARTPacket);
+  return serial.available() >= 1;  // trigger immediately; readBytes(500ms timeout) waits for full packet
 }
 
 bool UARTHandler::receivePacket(UARTPacket* pkt) {
@@ -25,10 +24,12 @@ bool UARTHandler::receivePacket(UARTPacket* pkt) {
   if (pkt->start != 0xAA) return false;
   
   // Read rest of packet
-  if (serial.readBytes((uint8_t*)&pkt->type, sizeof(UARTPacket) - 1) != sizeof(UARTPacket) - 1) {
+  size_t n = serial.readBytes((uint8_t*)&pkt->type, sizeof(UARTPacket) - 1);
+  if (n != sizeof(UARTPacket) - 1) {
+    Serial.printf("readBytes short: got %d expected %d\n", (int)n, (int)(sizeof(UARTPacket) - 1));
     return false;
   }
-  
+
   // Validate
   if (!validatePacket(pkt)) {
     sendNack();
