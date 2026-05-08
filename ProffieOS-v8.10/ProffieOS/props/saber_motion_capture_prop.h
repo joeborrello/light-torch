@@ -23,8 +23,10 @@ bool g_sync_flash     = false;  // true for 500ms when sync mode toggles — dri
 // Speed (deg/s) replayed from stored samples — drives blade style during MC_PLAYBACK
 float g_playback_speed = 0.0f;
 bool  g_in_playback    = false;
-// Tilt orientation 0..1 (0=one extreme, 0.5=home, 1=other extreme) — drives blade style in live mode
+// Tilt orientation 0..1 (0=one extreme, 0.5=home, 1=other extreme) — drives Red↔Blue color
 float g_tilt_t         = 0.5f;
+// Total tilt distance from home 0..1 (0=upright, 1=fully tilted) — drives brightness and volume
+float g_tilt_magnitude = 0.0f;
 
 // Motion capture states
 enum MotionCaptureState {
@@ -67,7 +69,8 @@ public:
   static constexpr uint32_t MOTION_DEBOUNCE_MS    = 400;            // sustained motion required to trigger recording/playback
   static constexpr uint32_t SYNC_HOLD_MS           = 3000;           // sustained vigorous motion to toggle sync mode
   static constexpr uint32_t CALIBRATION_SETTLE_MS  = 10000;          // stationary this long in IDLE → recalibrate home orientation
-  static constexpr float    ACCEL_FILTER_ALPHA      = 0.08f;          // low-pass weight for orientation smoothing
+  static constexpr float    ACCEL_FILTER_ALPHA      = 0.15f;          // low-pass weight for orientation smoothing
+  static constexpr float    TILT_SENSITIVITY        = 0.4f;           // tilt magnitude (0..1) at which full response is reached (~24°)
   static constexpr float    STATIONARY_THRESHOLD   = 10.0f;          // deg/s — below this = stationary
   static constexpr float    MIN_SWING_SPEED        = 30.0f;          // deg/s — note generation threshold
   static constexpr float    RECORD_MIN_SPEED       = 80.0f;          // deg/s — recording/playback trigger threshold
@@ -92,7 +95,8 @@ public:
   // Orientation calibration
   Vec3     filtered_accel_   = {0.0f, 0.0f, 1.0f}; // low-pass filtered accelerometer
   Vec3     home_gravity_     = {0.0f, 0.0f, 1.0f}; // gravity direction at calibrated home position
-  Vec3     tilt_axis_        = {1.0f, 0.0f, 0.0f}; // axis perpendicular to home_gravity_ for tilt measurement
+  Vec3     tilt_axis_        = {1.0f, 0.0f, 0.0f}; // first axis perpendicular to home_gravity_ (drives Red↔Blue color)
+  Vec3     tilt_axis2_       = {0.0f, 1.0f, 0.0f}; // second axis perpendicular to both (combined for magnitude)
   Vec3     cal_accel_sum_    = {0.0f, 0.0f, 0.0f}; // accumulator for calibration averaging
   int      cal_sample_count_ = 0;
   uint32_t idle_still_start_ = 0;                   // when continuous stillness in MC_IDLE began
@@ -183,6 +187,8 @@ public:
     else                           ref = Vec3(1.0f, 0.0f, 0.0f);
     // Gram-Schmidt: orthogonalize ref against home_gravity_
     tilt_axis_        = NormVec3(ref - home_gravity_ * home_gravity_.dot(ref));
+    // Second tilt axis: perpendicular to both home_gravity_ and tilt_axis_
+    tilt_axis2_       = NormVec3(home_gravity_.cross(tilt_axis_));
     calibrated_       = true;
     cal_accel_sum_    = Vec3(0.0f);
     cal_sample_count_ = 0;
@@ -193,11 +199,22 @@ public:
   float GetTiltT() {
     if (!calibrated_) return 0.5f;
     Vec3  g    = NormVec3(filtered_accel_);
-    float proj = g.dot(tilt_axis_);          // -1..+1
+    float proj = g.dot(tilt_axis_);          // -1..+1 along axis1
     float t    = (proj + 1.0f) * 0.5f;      // 0..1
     if (t < 0.0f) t = 0.0f;
     if (t > 1.0f) t = 1.0f;
     return t;
+  }
+
+  // Total tilt distance from home across both perpendicular axes, normalized by TILT_SENSITIVITY.
+  // Returns 0 at home, 1 at TILT_SENSITIVITY radians of tilt (or any direction reaching that magnitude).
+  float GetTiltMagnitude() {
+    if (!calibrated_) return 0.0f;
+    Vec3  g  = NormVec3(filtered_accel_);
+    float p1 = g.dot(tilt_axis_);
+    float p2 = g.dot(tilt_axis2_);
+    float m  = sqrtf(p1 * p1 + p2 * p2) / TILT_SENSITIVITY;
+    return m > 1.0f ? 1.0f : m;
   }
 
   // Allow starting from IDLE (normal) or PLAYBACK (auto-record response after playback)
@@ -452,21 +469,21 @@ public:
     uint32_t now = millis();
 
     UpdateFilteredAccel();
-    g_tilt_t = GetTiltT();
+    g_tilt_t         = GetTiltT();
+    g_tilt_magnitude = GetTiltMagnitude();
 
-    // Volume: scales 25%→100% with tilt distance from home; full volume before calibration
+    // Volume: 25%→100% of VOLUME with tilt magnitude; full volume before calibration or during playback
     {
-      float dist;
+      float m;
       if (!calibrated_) {
-        dist = 1.0f;
+        m = 1.0f;
       } else if (state == MC_PLAYBACK) {
-        dist = g_playback_speed / 600.0f;
-        if (dist > 1.0f) dist = 1.0f;
+        m = g_playback_speed / 600.0f;
+        if (m > 1.0f) m = 1.0f;
       } else {
-        dist = fabsf(g_tilt_t - 0.5f) * 2.0f;
-        if (dist > 1.0f) dist = 1.0f;
+        m = g_tilt_magnitude;
       }
-      dynamic_mixer.set_volume((int32_t)(VOLUME * (0.25f + dist * 0.75f)));
+      dynamic_mixer.set_volume((int32_t)(VOLUME * (0.25f + m * 0.75f)));
     }
 
     // Live notes: only when no SD swing files present; suppressed during playback/waiting states
