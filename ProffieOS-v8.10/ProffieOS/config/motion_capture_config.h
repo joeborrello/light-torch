@@ -101,8 +101,7 @@ public:
   int calculate(BladeBase*) { return g_sync_flash ? 32768 : 0; }
 };
 
-// In live mode: maps g_tilt_t (0..1) to 0..32768 for color blend.
-// In playback: maps stored speed to 0..32768 so replayed motion still drives color.
+// Tilt position 0..1 → color mix 0..32768. In playback, uses stored speed instead.
 class EffectiveTiltF {
 public:
   void run(BladeBase*) {}
@@ -121,9 +120,30 @@ public:
   int getInteger(int) { return calculate(nullptr); }
 };
 
+// Tilt distance from home (0=home, 1=max tilt) → alpha 8192..32768 (25%→100%).
+// In playback, uses stored speed as the distance proxy.
+class TiltBrightnessF {
+public:
+  void run(BladeBase*) {}
+  int calculate(BladeBase*) {
+    float dist;
+    if (g_in_playback) {
+      dist = g_playback_speed / 600.0f;
+    } else {
+      dist = fabsf(g_tilt_t - 0.5f) * 2.0f;
+    }
+    if (dist > 1.0f) dist = 1.0f;
+    if (dist < 0.0f) dist = 0.0f;
+    return (int)(8192.0f + dist * 24576.0f);  // 25%..100%
+  }
+  int getInteger(int) { return calculate(nullptr); }
+};
+
 using MainStyle = Layers<
-  // Tilt-driven color blend: Red (tilt=0) → Blue (tilt=1); playback uses stored speed
-  Mix<EffectiveTiltF, Red, Blue>,
+  // Standby base: warm white pulsing between full and ~half brightness
+  Pulsing<Rgb<255,200,120>, Rgb<128,100,60>, 3000>,
+  // Tilt color overlay: Red→Blue, brightness 25% at home → 100% at max tilt
+  AlphaL<Mix<EffectiveTiltF, Red, Blue>, TiltBrightnessF>,
   // Slow white pulse while waiting for the other board to reply
   AlphaL<Pulsing<White, Black, 2000>, AwaitingReplyF>,
   // Rapidly pulsing red when awaiting pickup after data received

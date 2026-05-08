@@ -454,6 +454,21 @@ public:
     UpdateFilteredAccel();
     g_tilt_t = GetTiltT();
 
+    // Volume: scales 25%→100% with tilt distance from home; full volume before calibration
+    {
+      float dist;
+      if (!calibrated_) {
+        dist = 1.0f;
+      } else if (state == MC_PLAYBACK) {
+        dist = g_playback_speed / 600.0f;
+        if (dist > 1.0f) dist = 1.0f;
+      } else {
+        dist = fabsf(g_tilt_t - 0.5f) * 2.0f;
+        if (dist > 1.0f) dist = 1.0f;
+      }
+      dynamic_mixer.set_volume((int32_t)(VOLUME * (0.25f + dist * 0.75f)));
+    }
+
     // Live notes: only when no SD swing files present; suppressed during playback/waiting states
     if (SFX_swing.files_found() == 0 &&
         state != MC_PLAYBACK && state != MC_AWAIT_PICKUP && state != MC_AWAITING_REPLY) {
