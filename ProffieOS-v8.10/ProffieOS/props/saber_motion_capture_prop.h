@@ -23,6 +23,8 @@ bool g_sync_flash     = false;  // true for 500ms when sync mode toggles — dri
 // Speed (deg/s) replayed from stored samples — drives blade style during MC_PLAYBACK
 float g_playback_speed = 0.0f;
 bool  g_in_playback    = false;
+// Tilt orientation 0..1 (0=one extreme, 0.5=home, 1=other extreme) — drives blade style in live mode
+float g_tilt_t         = 0.5f;
 
 // Motion capture states
 enum MotionCaptureState {
@@ -61,10 +63,12 @@ public:
   static constexpr uint32_t DOCK_SETTLE_MS        = 3000;           // stationary this long → transmit
   static constexpr uint32_t MOTION_STOP_MS        = 500;            // no motion this long → consider stopped
   static constexpr uint32_t MAX_RECORDING_MS      = 30000;          // safety cap
-  static constexpr uint32_t REPLY_TIMEOUT_MS      = 5 * 60 * 1000; // 5 minutes → reset to IDLE
+  static constexpr uint32_t REPLY_TIMEOUT_MS      = 3 * 60 * 1000; // 3 minutes → reset to IDLE
   static constexpr uint32_t MOTION_DEBOUNCE_MS    = 400;            // sustained motion required to trigger recording/playback
-  static constexpr uint32_t SYNC_HOLD_MS          = 3000;           // sustained vigorous motion to toggle sync mode
-  static constexpr float    STATIONARY_THRESHOLD  = 10.0f;          // deg/s — below this = stationary
+  static constexpr uint32_t SYNC_HOLD_MS           = 3000;           // sustained vigorous motion to toggle sync mode
+  static constexpr uint32_t CALIBRATION_SETTLE_MS  = 10000;          // stationary this long in IDLE → recalibrate home orientation
+  static constexpr float    ACCEL_FILTER_ALPHA      = 0.08f;          // low-pass weight for orientation smoothing
+  static constexpr float    STATIONARY_THRESHOLD   = 10.0f;          // deg/s — below this = stationary
   static constexpr float    MIN_SWING_SPEED        = 30.0f;          // deg/s — note generation threshold
   static constexpr float    RECORD_MIN_SPEED       = 80.0f;          // deg/s — recording/playback trigger threshold
   static constexpr float    SYNC_TRIGGER_SPEED     = 300.0f;         // deg/s — "blue light" threshold for sync mode toggle
@@ -84,6 +88,15 @@ public:
   uint32_t sync_trigger_start_  = 0;  // when continuous vigorous motion began for sync toggle
   bool     sync_mode_           = false;
   bool     sync_trigger_active_ = false;
+
+  // Orientation calibration
+  Vec3     filtered_accel_   = {0.0f, 0.0f, 1.0f}; // low-pass filtered accelerometer
+  Vec3     home_gravity_     = {0.0f, 0.0f, 1.0f}; // gravity direction at calibrated home position
+  Vec3     tilt_axis_        = {1.0f, 0.0f, 0.0f}; // axis perpendicular to home_gravity_ for tilt measurement
+  Vec3     cal_accel_sum_    = {0.0f, 0.0f, 0.0f}; // accumulator for calibration averaging
+  int      cal_sample_count_ = 0;
+  uint32_t idle_still_start_ = 0;                   // when continuous stillness in MC_IDLE began
+  bool     calibrated_       = false;
 
   // UART communication (using Serial3 - TX=PC1, RX=PC0)
   void InitUART() {
@@ -128,9 +141,14 @@ public:
   void Setup() override {
     PropBase::Setup();
     InitUART();
-    state = MC_IDLE;
+    state             = MC_IDLE;
     motion_sample_count = 0;
-    auto_on_done_ = false;
+    auto_on_done_     = false;
+    filtered_accel_   = Vec3(0.0f, 0.0f, 1.0f);
+    cal_accel_sum_    = Vec3(0.0f);
+    cal_sample_count_ = 0;
+    idle_still_start_ = 0;
+    calibrated_       = false;
     STDOUT.println("Motion Capture Prop: Ready");
   }
 
@@ -140,6 +158,46 @@ public:
 
   bool IsStationary() {
     return fusor.swing_speed() < STATIONARY_THRESHOLD;
+  }
+
+  Vec3 NormVec3(const Vec3& v) {
+    float l = v.len();
+    return l > 0.0001f ? v * (1.0f / l) : Vec3(0.0f, 0.0f, 1.0f);
+  }
+
+  void UpdateFilteredAccel() {
+    Vec3 a = fusor.accel();
+    filtered_accel_ = filtered_accel_ * (1.0f - ACCEL_FILTER_ALPHA) + a * ACCEL_FILTER_ALPHA;
+  }
+
+  void CommitCalibration() {
+    if (cal_sample_count_ == 0) return;
+    home_gravity_ = NormVec3(cal_accel_sum_ * (1.0f / (float)cal_sample_count_));
+    // Pick the world axis most perpendicular to home_gravity_ as the tilt reference direction
+    float dx = fabsf(home_gravity_.x);
+    float dy = fabsf(home_gravity_.y);
+    float dz = fabsf(home_gravity_.z);
+    Vec3 ref;
+    if (dy <= dx && dy <= dz)      ref = Vec3(0.0f, 1.0f, 0.0f);
+    else if (dz <= dx && dz <= dy) ref = Vec3(0.0f, 0.0f, 1.0f);
+    else                           ref = Vec3(1.0f, 0.0f, 0.0f);
+    // Gram-Schmidt: orthogonalize ref against home_gravity_
+    tilt_axis_        = NormVec3(ref - home_gravity_ * home_gravity_.dot(ref));
+    calibrated_       = true;
+    cal_accel_sum_    = Vec3(0.0f);
+    cal_sample_count_ = 0;
+    idle_still_start_ = 0;
+    STDOUT.println("Orientation calibrated");
+  }
+
+  float GetTiltT() {
+    if (!calibrated_) return 0.5f;
+    Vec3  g    = NormVec3(filtered_accel_);
+    float proj = g.dot(tilt_axis_);          // -1..+1
+    float t    = (proj + 1.0f) * 0.5f;      // 0..1
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return t;
   }
 
   // Allow starting from IDLE (normal) or PLAYBACK (auto-record response after playback)
@@ -258,6 +316,7 @@ public:
   uint32_t arp_interval_   = 200;
   int      arp_step_       = 0;
 
+  // Used during playback to replay stored motion with speed-mapped notes
   void PlayNoteAtSpeed(float speed) {
     static constexpr float pentatonic[20] = {
       130.81f, 146.83f, 164.81f, 196.00f, 220.00f,
@@ -265,11 +324,7 @@ public:
       523.25f, 587.33f, 659.25f, 783.99f, 880.00f,
      1046.50f,1174.66f,1318.51f,1567.98f,1760.00f
     };
-    if (speed < MIN_SWING_SPEED) {
-      arp_step_     = 0;
-      arp_interval_ = 200;
-      return;
-    }
+    if (speed < MIN_SWING_SPEED) { arp_step_ = 0; arp_interval_ = 200; return; }
     float t = (speed - MIN_SWING_SPEED) / (MAX_SWING_SPEED - MIN_SWING_SPEED);
     if (t > 1.0f) t = 1.0f;
     arp_interval_ = (uint32_t)(200.0f - t * 170.0f);
@@ -279,8 +334,26 @@ public:
     arp_step_ = (arp_step_ + 1) % 3;
   }
 
+  // Used in live mode: tilt position (0..1) drives pitch and arp rate
+  void PlayNoteAtTilt(float tilt_t) {
+    static constexpr float pentatonic[20] = {
+      130.81f, 146.83f, 164.81f, 196.00f, 220.00f,
+      261.63f, 293.66f, 329.63f, 392.00f, 440.00f,
+      523.25f, 587.33f, 659.25f, 783.99f, 880.00f,
+     1046.50f,1174.66f,1318.51f,1567.98f,1760.00f
+    };
+    float dist = fabsf(tilt_t - 0.5f) * 2.0f;  // 0 at home, 1 at extremes
+    arp_interval_ = (uint32_t)(200.0f - dist * 150.0f);
+    if (arp_interval_ < 50) arp_interval_ = 50;
+    int note_idx = (int)(tilt_t * 17.0f);
+    if (note_idx > 17) note_idx = 17;
+    if (note_idx < 0)  note_idx = 0;
+    beeper.Beep(arp_interval_ / 1000.0f, pentatonic[note_idx + arp_step_]);
+    arp_step_ = (arp_step_ + 1) % 3;
+  }
+
   void PlayMotionNote() {
-    PlayNoteAtSpeed(fusor.swing_speed());
+    PlayNoteAtTilt(g_tilt_t);
   }
 
   // ── UART receive ──────────────────────────────────────────────
@@ -378,6 +451,9 @@ public:
 
     uint32_t now = millis();
 
+    UpdateFilteredAccel();
+    g_tilt_t = GetTiltT();
+
     // Live notes: only when no SD swing files present; suppressed during playback/waiting states
     if (SFX_swing.files_found() == 0 &&
         state != MC_PLAYBACK && state != MC_AWAIT_PICKUP && state != MC_AWAITING_REPLY) {
@@ -407,6 +483,7 @@ public:
         g_awaiting_reply     = false;
         first_motion_time_   = 0;
         state                = MC_IDLE;
+        idle_still_start_    = 0;
         sync_flash_end_ms_   = now + 500;
         STDOUT.println(sync_mode_ ? "Sync mode ON" : "Sync mode OFF");
       }
@@ -431,6 +508,23 @@ public:
 
     switch (state) {
       case MC_IDLE:
+        // Recalibrate home orientation whenever stationary for CALIBRATION_SETTLE_MS
+        if (IsStationary()) {
+          if (idle_still_start_ == 0) {
+            idle_still_start_ = now;
+            cal_accel_sum_    = Vec3(0.0f);
+            cal_sample_count_ = 0;
+          }
+          cal_accel_sum_ += fusor.accel();
+          cal_sample_count_++;
+          if (now - idle_still_start_ >= CALIBRATION_SETTLE_MS)
+            CommitCalibration();  // resets idle_still_start_ to 0
+        } else {
+          idle_still_start_ = 0;
+          cal_accel_sum_    = Vec3(0.0f);
+          cal_sample_count_ = 0;
+        }
+
         if (!sync_mode_) {
           // Debounce: require RECORD_MIN_SPEED sustained for MOTION_DEBOUNCE_MS
           if (fusor.swing_speed() > RECORD_MIN_SPEED) {
@@ -481,8 +575,9 @@ public:
         // Timeout: reset after 5 minutes
         if (millis() - waiting_start_ms_ >= REPLY_TIMEOUT_MS) {
           STDOUT.println("Await pickup timed out — resetting");
-          g_await_pickup    = false;
+          g_await_pickup     = false;
           first_motion_time_ = 0;
+          idle_still_start_  = 0;
           state = MC_IDLE;
           break;
         }
@@ -508,8 +603,9 @@ public:
       case MC_AWAITING_REPLY:
         if (millis() - waiting_start_ms_ >= REPLY_TIMEOUT_MS) {
           STDOUT.println("Awaiting reply timed out — resetting");
-          g_sent_flash     = false;
-          g_awaiting_reply = false;
+          g_sent_flash      = false;
+          g_awaiting_reply  = false;
+          idle_still_start_ = 0;
           state = MC_IDLE;
         }
         break;

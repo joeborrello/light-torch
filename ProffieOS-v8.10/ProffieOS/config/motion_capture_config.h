@@ -68,6 +68,7 @@ extern bool  g_awaiting_reply;
 extern bool  g_sync_flash;
 extern float g_playback_speed;
 extern bool  g_in_playback;
+extern float g_tilt_t;
 
 class AwaitPickupF {
 public:
@@ -100,29 +101,29 @@ public:
   int calculate(BladeBase*) { return g_sync_flash ? 32768 : 0; }
 };
 
-// During MC_PLAYBACK uses stored speed; otherwise uses live fusor swing speed.
-// Scales like SwingSpeed<N>: 0..N deg/s → 0..32768.
-template<int N>
-class EffectiveSwingSpeedF {
+// In live mode: maps g_tilt_t (0..1) to 0..32768 for color blend.
+// In playback: maps stored speed to 0..32768 so replayed motion still drives color.
+class EffectiveTiltF {
 public:
   void run(BladeBase*) {}
   int calculate(BladeBase*) {
-    float speed = g_in_playback ? g_playback_speed : fusor.swing_speed();
-    int v = (int)(speed * 32768.0f / (float)N);
+    float t;
+    if (g_in_playback) {
+      t = g_playback_speed / 600.0f;
+      if (t > 1.0f) t = 1.0f;
+      if (t < 0.0f) t = 0.0f;
+    } else {
+      t = g_tilt_t;
+    }
+    int v = (int)(t * 32768.0f);
     return v > 32768 ? 32768 : (v < 0 ? 0 : v);
   }
   int getInteger(int) { return calculate(nullptr); }
 };
 
-// Holds peak swing speed for 10 seconds, then decays over 1 second
-using MotionLatch = SingleValueAdapter<HoldPeakF<EffectiveSwingSpeedF<200>, Int<10000>, Int<32768>>>;
-
 using MainStyle = Layers<
-  // Idle RGBW cycle or motion-responsive red/blue
-  Mix<MotionLatch,
-    Pulsing<ColorSequence<3000, Red, Green, Blue, White>, Black, 3000>,
-    Mix<EffectiveSwingSpeedF<400>, Red, Blue>
-  >,
+  // Tilt-driven color blend: Red (tilt=0) → Blue (tilt=1); playback uses stored speed
+  Mix<EffectiveTiltF, Red, Blue>,
   // Slow white pulse while waiting for the other board to reply
   AlphaL<Pulsing<White, Black, 2000>, AwaitingReplyF>,
   // Rapidly pulsing red when awaiting pickup after data received
