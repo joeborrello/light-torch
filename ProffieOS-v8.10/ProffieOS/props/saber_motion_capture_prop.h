@@ -23,9 +23,11 @@ bool g_sync_flash     = false;  // true for 500ms when sync mode toggles — dri
 // Speed (deg/s) replayed from stored samples — drives blade style during MC_PLAYBACK
 float g_playback_speed = 0.0f;
 bool  g_in_playback    = false;
-// Tilt orientation 0..1 (0=one extreme, 0.5=home, 1=other extreme) — drives Red↔Blue color
-float g_tilt_t         = 0.5f;
-// Total tilt distance from home 0..1 (0=upright, 1=fully tilted) — drives brightness and volume
+// Directional tilt color components 0..1: p1>0=left(Red), p1<0=right(Blue), p2>0=forward(Green), p2<0=backward(Yellow=R+G)
+float g_tilt_color_r = 0.0f;
+float g_tilt_color_g = 0.0f;
+float g_tilt_color_b = 0.0f;
+// Total 2D tilt distance from home 0..1 — drives brightness and volume
 float g_tilt_magnitude = 0.0f;
 
 // Motion capture states
@@ -196,25 +198,32 @@ public:
     STDOUT.println("Orientation calibrated");
   }
 
-  float GetTiltT() {
-    if (!calibrated_) return 0.5f;
-    Vec3  g    = NormVec3(filtered_accel_);
-    float proj = g.dot(tilt_axis_);          // -1..+1 along axis1
-    float t    = (proj + 1.0f) * 0.5f;      // 0..1
-    if (t < 0.0f) t = 0.0f;
-    if (t > 1.0f) t = 1.0f;
-    return t;
-  }
-
-  // Total tilt distance from home across both perpendicular axes, normalized by TILT_SENSITIVITY.
-  // Returns 0 at home, 1 at TILT_SENSITIVITY radians of tilt (or any direction reaching that magnitude).
-  float GetTiltMagnitude() {
-    if (!calibrated_) return 0.0f;
-    Vec3  g  = NormVec3(filtered_accel_);
-    float p1 = g.dot(tilt_axis_);
-    float p2 = g.dot(tilt_axis2_);
-    float m  = sqrtf(p1 * p1 + p2 * p2) / TILT_SENSITIVITY;
-    return m > 1.0f ? 1.0f : m;
+  // Compute directional tilt color components and magnitude from current filtered accel.
+  // tilt_axis_ positive = left (Red), negative = right (Blue)
+  // tilt_axis2_ positive = forward (Green), negative = backward (Yellow = R+G)
+  void UpdateTiltState() {
+    if (!calibrated_) {
+      g_tilt_color_r   = 0.0f;
+      g_tilt_color_g   = 0.0f;
+      g_tilt_color_b   = 0.0f;
+      g_tilt_magnitude = 0.0f;
+      return;
+    }
+    Vec3  gv = NormVec3(filtered_accel_);
+    float p1 = gv.dot(tilt_axis_);   // +left / -right
+    float p2 = gv.dot(tilt_axis2_);  // +forward / -backward
+    float left_c     = p1 > 0.0f ? p1 / TILT_SENSITIVITY : 0.0f;
+    float right_c    = p1 < 0.0f ? -p1 / TILT_SENSITIVITY : 0.0f;
+    float forward_c  = p2 > 0.0f ? p2 / TILT_SENSITIVITY : 0.0f;
+    float backward_c = p2 < 0.0f ? -p2 / TILT_SENSITIVITY : 0.0f;
+    float r = left_c + backward_c;
+    float g = forward_c + backward_c;
+    float b = right_c;
+    g_tilt_color_r   = r > 1.0f ? 1.0f : r;
+    g_tilt_color_g   = g > 1.0f ? 1.0f : g;
+    g_tilt_color_b   = b > 1.0f ? 1.0f : b;
+    float m = sqrtf(p1 * p1 + p2 * p2) / TILT_SENSITIVITY;
+    g_tilt_magnitude = m > 1.0f ? 1.0f : m;
   }
 
   // Allow starting from IDLE (normal) or PLAYBACK (auto-record response after playback)
@@ -351,18 +360,18 @@ public:
     arp_step_ = (arp_step_ + 1) % 3;
   }
 
-  // Used in live mode: tilt position (0..1) drives pitch and arp rate
-  void PlayNoteAtTilt(float tilt_t) {
+  // Used in live mode: tilt magnitude (0..1) drives pitch and arp rate
+  void PlayNoteAtMagnitude(float magnitude) {
     static constexpr float pentatonic[20] = {
       130.81f, 146.83f, 164.81f, 196.00f, 220.00f,
       261.63f, 293.66f, 329.63f, 392.00f, 440.00f,
       523.25f, 587.33f, 659.25f, 783.99f, 880.00f,
      1046.50f,1174.66f,1318.51f,1567.98f,1760.00f
     };
-    float dist = fabsf(tilt_t - 0.5f) * 2.0f;  // 0 at home, 1 at extremes
-    arp_interval_ = (uint32_t)(200.0f - dist * 150.0f);
+    if (magnitude < 0.02f) { arp_step_ = 0; arp_interval_ = 200; return; }
+    arp_interval_ = (uint32_t)(200.0f - magnitude * 150.0f);
     if (arp_interval_ < 50) arp_interval_ = 50;
-    int note_idx = (int)(tilt_t * 17.0f);
+    int note_idx = (int)(magnitude * 17.0f);
     if (note_idx > 17) note_idx = 17;
     if (note_idx < 0)  note_idx = 0;
     beeper.Beep(arp_interval_ / 1000.0f, pentatonic[note_idx + arp_step_]);
@@ -370,7 +379,7 @@ public:
   }
 
   void PlayMotionNote() {
-    PlayNoteAtTilt(g_tilt_t);
+    PlayNoteAtMagnitude(g_tilt_magnitude);
   }
 
   // ── UART receive ──────────────────────────────────────────────
@@ -469,8 +478,7 @@ public:
     uint32_t now = millis();
 
     UpdateFilteredAccel();
-    g_tilt_t         = GetTiltT();
-    g_tilt_magnitude = GetTiltMagnitude();
+    UpdateTiltState();
 
     // Volume: 25%→100% of VOLUME with tilt magnitude; full volume before calibration or during playback
     {
@@ -525,14 +533,21 @@ public:
 
     g_sync_flash = (now < sync_flash_end_ms_);
 
-    // SD card swing sound selection (future use)
-    if (SFX_swing.files_found() > 0) {
-      float speed = fusor.swing_speed();
-      float t = (speed - MIN_SWING_SPEED) / (MAX_SWING_SPEED - MIN_SWING_SPEED);
-      if (t < 0.0f) t = 0.0f;
-      if (t > 1.0f) t = 1.0f;
-      int idx = (int)(t * (int)SFX_swing.files_found());
-      if (idx >= (int)SFX_swing.files_found()) idx = (int)SFX_swing.files_found() - 1;
+    // SD card swing sound: direction-mapped (idx 0-3 = low, idx 4-7 = high at magnitude>0.5)
+    // 0=left(01), 1=right(02), 2=forward(03), 3=backward(04), +4 for 05-08 at high magnitude
+    if (SFX_swing.files_found() > 0 && calibrated_) {
+      Vec3  gv  = NormVec3(filtered_accel_);
+      float p1  = gv.dot(tilt_axis_);
+      float p2  = gv.dot(tilt_axis2_);
+      int   dir = 0;
+      float mx  = 0.0f;
+      if (p1  > mx) { mx = p1;  dir = 0; }  // left
+      if (-p1 > mx) { mx = -p1; dir = 1; }  // right
+      if (p2  > mx) { mx = p2;  dir = 2; }  // forward
+      if (-p2 > mx) { mx = -p2; dir = 3; }  // backward
+      int idx    = dir + (g_tilt_magnitude > 0.5f ? 4 : 0);
+      int nfiles = (int)SFX_swing.files_found();
+      if (idx >= nfiles) idx = dir < nfiles ? dir : 0;
       SFX_swing.Select(idx);
     }
 

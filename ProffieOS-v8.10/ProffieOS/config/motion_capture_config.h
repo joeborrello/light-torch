@@ -68,7 +68,9 @@ extern bool  g_awaiting_reply;
 extern bool  g_sync_flash;
 extern float g_playback_speed;
 extern bool  g_in_playback;
-extern float g_tilt_t;
+extern float g_tilt_color_r;
+extern float g_tilt_color_g;
+extern float g_tilt_color_b;
 extern float g_tilt_magnitude;
 
 class AwaitPickupF {
@@ -102,23 +104,18 @@ public:
   int calculate(BladeBase*) { return g_sync_flash ? 32768 : 0; }
 };
 
-// Tilt position 0..1 → color mix 0..32768. In playback, uses stored speed instead.
-class EffectiveTiltF {
+// Maps g_tilt_color_r/g/b directional components to a blade color
+// Red=left, Blue=right, Green=forward, Yellow(R+G)=backward; blends for diagonal tilts
+class TiltDirectionalColorStyle {
 public:
   void run(BladeBase*) {}
-  int calculate(BladeBase*) {
-    float t;
-    if (g_in_playback) {
-      t = g_playback_speed / 600.0f;
-      if (t > 1.0f) t = 1.0f;
-      if (t < 0.0f) t = 0.0f;
-    } else {
-      t = g_tilt_t;
-    }
-    int v = (int)(t * 32768.0f);
-    return v > 32768 ? 32768 : (v < 0 ? 0 : v);
+  SimpleColor getColor(int) {
+    return SimpleColor(Color16(
+      (int)(g_tilt_color_r * 65535.0f),
+      (int)(g_tilt_color_g * 65535.0f),
+      (int)(g_tilt_color_b * 65535.0f)
+    ));
   }
-  int getInteger(int) { return calculate(nullptr); }
 };
 
 // g_tilt_magnitude 0..1 → 0..32768. Used to crossfade standby↔tilt color and during playback.
@@ -140,12 +137,10 @@ public:
 };
 
 using MainStyle = Layers<
-  // Crossfade: warm white pulsing at home → Red/Blue tilt color when tilted
-  // TiltMagnitudeF=0 → pure warm white; TiltMagnitudeF=32768 → pure tilt color
-  Mix<TiltMagnitudeF,
-    Pulsing<Rgb<255,200,120>, Rgb<128,100,60>, 3000>,
-    Mix<EffectiveTiltF, Red, Blue>
-  >,
+  // Base: warm white pulsing between full and half brightness at standby
+  Pulsing<Rgb<255,200,120>, Rgb<128,100,60>, 3000>,
+  // Directional tilt color (Red/Blue/Green/Yellow) fades in over warm white as tilt magnitude increases
+  AlphaL<TiltDirectionalColorStyle, TiltMagnitudeF>,
   // Slow white pulse while waiting for the other board to reply
   AlphaL<Pulsing<White, Black, 2000>, AwaitingReplyF>,
   // Rapidly pulsing red when awaiting pickup after data received
