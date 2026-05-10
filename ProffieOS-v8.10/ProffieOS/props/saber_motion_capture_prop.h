@@ -75,7 +75,7 @@ public:
   static constexpr float    TILT_SENSITIVITY        = 0.4f;           // tilt magnitude (0..1) at which full response is reached (~24°)
   static constexpr float    STATIONARY_THRESHOLD   = 10.0f;          // deg/s — below this = stationary
   static constexpr float    MIN_SWING_SPEED        = 30.0f;          // deg/s — note generation threshold
-  static constexpr float    RECORD_MIN_SPEED       = 80.0f;          // deg/s — recording/playback trigger threshold
+  static constexpr float    RECORD_MIN_SPEED       = 20.0f;          // deg/s — recording/playback trigger threshold
   static constexpr float    SYNC_TRIGGER_SPEED     = 300.0f;         // deg/s — "blue light" threshold for sync mode toggle
   static constexpr float    MAX_SWING_SPEED        = 600.0f;
 
@@ -494,8 +494,8 @@ public:
       dynamic_mixer.set_volume((int32_t)(VOLUME * (0.25f + m * 0.75f)));
     }
 
-    // Live notes: only when no SD swing files present; suppressed during playback/waiting states
-    if (SFX_swing.files_found() == 0 &&
+    // Live notes: only when moving and no SD swing files present; suppressed during playback/waiting states
+    if (SFX_swing.files_found() == 0 && IsMoving() &&
         state != MC_PLAYBACK && state != MC_AWAIT_PICKUP && state != MC_AWAITING_REPLY) {
       if (now - last_note_time_ >= arp_interval_) {
         last_note_time_ = now;
