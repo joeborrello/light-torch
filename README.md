@@ -113,7 +113,7 @@ The swing file played is selected by speed: slow motion → `swing01`, fast moti
 
 ### Sync Mode
 
-Sustained vigorous motion (>300 dps for 3 seconds) from idle toggles **sync mode** on or off with a green flash. In sync mode, devices play live simultaneously without recording or transmitting. Repeat the gesture to exit.
+Hold the device **upside down** (inverted relative to its calibrated home orientation) for 3 seconds from idle to toggle **sync mode** on or off with a green flash. In sync mode, devices play live simultaneously without recording or transmitting. Repeat the gesture to exit.
 
 ### Timeouts
 

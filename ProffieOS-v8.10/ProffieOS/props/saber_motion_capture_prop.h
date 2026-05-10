@@ -77,7 +77,7 @@ public:
   static constexpr float    STATIONARY_THRESHOLD   = 10.0f;          // deg/s — below this = stationary
   static constexpr float    MIN_SWING_SPEED        = 30.0f;          // deg/s — note generation threshold
   static constexpr float    RECORD_MIN_SPEED       = 20.0f;          // deg/s — recording/playback trigger threshold
-  static constexpr float    SYNC_TRIGGER_SPEED     = 300.0f;         // deg/s — "blue light" threshold for sync mode toggle
+  static constexpr float    SYNC_INVERT_THRESHOLD  = -0.7f;          // dot(filtered_accel, home_gravity) below this = upside down → sync toggle
   static constexpr float    MAX_SWING_SPEED        = 600.0f;
 
   MotionPacket motion_buffer[MOTION_BUFFER_SIZE];
@@ -524,10 +524,12 @@ public:
     g_sent_flash     = (now < sent_flash_end_ms_);
     g_awaiting_reply = (state == MC_AWAITING_REPLY && !g_sent_flash);
 
-    // Sync mode toggle: 3 seconds of continuous motion above SYNC_TRIGGER_SPEED
+    // Sync mode toggle: hold upside-down (dot product with home < SYNC_INVERT_THRESHOLD) for SYNC_HOLD_MS
     // Only allowed from idle-ish states, not mid-operation
+    bool is_upside_down = calibrated_ &&
+      NormVec3(filtered_accel_).dot(home_gravity_) < SYNC_INVERT_THRESHOLD;
     bool can_sync_toggle = (state == MC_IDLE || state == MC_AWAITING_REPLY);
-    if (can_sync_toggle && fusor.swing_speed() > SYNC_TRIGGER_SPEED) {
+    if (can_sync_toggle && is_upside_down) {
       if (!sync_trigger_active_) {
         sync_trigger_active_ = true;
         sync_trigger_start_  = now;

@@ -40,7 +40,7 @@ MC_IDLE → (motion > 80dps for 400ms) → MC_RECORDING
 MC_RECORDING → (stationary 500ms) → MC_WAITING_DOCK
 MC_WAITING_DOCK → (stable 3s) → MC_TRANSMITTING → MC_AWAITING_REPLY
 MC_AWAITING_REPLY → (ESP32 forwards reply from peer) → MC_RECEIVING → MC_AWAIT_PICKUP
-MC_AWAIT_PICKUP → (motion > 80dps for 400ms) → MC_PLAYBACK → StartRecording() [loops]
+MC_AWAIT_PICKUP → (motion > 20dps for 400ms) → MC_PLAYBACK → MC_IDLE (g_post_playback=true)
 ```
 All waiting states (MC_AWAITING_REPLY, MC_AWAIT_PICKUP) time out to MC_IDLE after 5 minutes.
 
@@ -50,7 +50,7 @@ All waiting states (MC_AWAITING_REPLY, MC_AWAIT_PICKUP) time out to MC_IDLE afte
 
 **Audio** — `beeper.Beep()` generates pentatonic arpeggiation when no SD card is present (`SFX_swing.files_found() == 0`). When an SD card is present with `motion_capture/swing##.wav` files, ProffieOS plays those instead and the beeper is silenced. `SFX_swing.Select(idx)` is called each Loop() to preselect the file by speed.
 
-**Sync mode** — 3 seconds of continuous motion above 300 dps (from MC_IDLE or MC_AWAITING_REPLY only) toggles `sync_mode_`. In sync mode, MC_IDLE never starts recording — both devices play live simultaneously.
+**Sync mode** — holding the device upside down (dot product of filtered_accel with home_gravity_ below -0.7) for 3 seconds (from MC_IDLE or MC_AWAITING_REPLY only) toggles `sync_mode_`. In sync mode, MC_IDLE never starts recording — both devices play live simultaneously.
 
 **UART packet format** (70 bytes): `0xAA | type | len_lo | len_hi | payload[64] | checksum | 0x55`. A dummy `0xFF` byte is sent before each packet to work around LPUART1 first-byte drop on STM32.
 
@@ -79,10 +79,10 @@ Pure relay — receives UART packets from Proffie, forwards via ESP-NOW; receive
 | Constant | Value | Purpose |
 |---|---|---|
 | `MIN_SWING_SPEED` | 30 dps | Note/sound generation threshold |
-| `RECORD_MIN_SPEED` | 80 dps | Recording and playback trigger |
+| `RECORD_MIN_SPEED` | 20 dps | Recording and playback trigger |
 | `MOTION_DEBOUNCE_MS` | 400 ms | Sustained motion required to trigger |
 | `STATIONARY_THRESHOLD` | 10 dps | Below this = stationary |
-| `SYNC_TRIGGER_SPEED` | 300 dps | Vigorous motion for sync mode toggle |
+| `SYNC_INVERT_THRESHOLD` | -0.7 | dot(filtered_accel, home_gravity) below this = upside down → sync toggle |
 | `SYNC_HOLD_MS` | 3000 ms | Duration required to toggle sync |
 | `DOCK_SETTLE_MS` | 3000 ms | Stationary time before transmitting |
 | `MOTION_BUFFER_SIZE` | 1500 | Samples (30s at 50Hz) |
