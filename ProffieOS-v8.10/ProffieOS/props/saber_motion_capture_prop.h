@@ -528,7 +528,8 @@ public:
     // Only allowed from idle-ish states, not mid-operation
     bool is_upside_down = calibrated_ &&
       NormVec3(filtered_accel_).dot(home_gravity_) < SYNC_INVERT_THRESHOLD;
-    bool can_sync_toggle = (state == MC_IDLE || state == MC_AWAITING_REPLY);
+    bool can_sync_toggle = (state == MC_IDLE || state == MC_AWAITING_REPLY ||
+                            state == MC_RECORDING || state == MC_WAITING_DOCK);
     if (can_sync_toggle && is_upside_down) {
       if (!sync_trigger_active_) {
         sync_trigger_active_ = true;
@@ -540,6 +541,7 @@ public:
         g_sent_flash         = false;
         g_awaiting_reply     = false;
         first_motion_time_   = 0;
+        motion_sample_count  = 0;  // discard any motion buffered during the flip
         state                = MC_IDLE;
         idle_still_start_    = 0;
         sync_flash_end_ms_   = now + 500;
