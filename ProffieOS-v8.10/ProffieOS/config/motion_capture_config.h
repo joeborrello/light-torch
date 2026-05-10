@@ -66,8 +66,7 @@ extern bool  g_await_pickup;
 extern bool  g_sent_flash;
 extern bool  g_awaiting_reply;
 extern bool  g_sync_flash;
-extern float g_playback_speed;
-extern bool  g_in_playback;
+extern bool  g_post_playback;
 extern float g_tilt_color_r;
 extern float g_tilt_color_g;
 extern float g_tilt_color_b;
@@ -118,29 +117,32 @@ public:
   }
 };
 
-// g_tilt_magnitude 0..1 → 0..32768. Used to crossfade standby↔tilt color and during playback.
+// g_tilt_magnitude 0..1 → 0..32768. During playback this is set from stored accel, so no special case needed.
 class TiltMagnitudeF {
 public:
   void run(BladeBase*) {}
   int calculate(BladeBase*) {
-    float m;
-    if (g_in_playback) {
-      m = g_playback_speed / 600.0f;
-      if (m > 1.0f) m = 1.0f;
-    } else {
-      m = g_tilt_magnitude;
-    }
-    int v = (int)(m * 32768.0f);
+    int v = (int)(g_tilt_magnitude * 32768.0f);
     return v > 32768 ? 32768 : (v < 0 ? 0 : v);
   }
   int getInteger(int) { return calculate(nullptr); }
 };
 
+// true after playback completes — signals user the device is ready to generate a new message
+class ReadyToRecordF {
+public:
+  void run(BladeBase*) {}
+  int getInteger(int)       { return g_post_playback ? 32768 : 0; }
+  int calculate(BladeBase*) { return g_post_playback ? 32768 : 0; }
+};
+
 using MainStyle = Layers<
   // Base: warm white pulsing between full and half brightness at standby
   Pulsing<Rgb<255,200,120>, Rgb<128,100,60>, 3000>,
-  // Directional tilt color (Red/Blue/Green/Yellow) fades in over warm white as tilt magnitude increases
+  // Directional tilt color (Red/Blue/Green/Yellow) fades in as tilt magnitude increases
   AlphaL<TiltDirectionalColorStyle, TiltMagnitudeF>,
+  // Fast white pulse after playback completes — signals device is ready to generate a new message
+  AlphaL<Pulsing<White, Black, 700>, ReadyToRecordF>,
   // Slow white pulse while waiting for the other board to reply
   AlphaL<Pulsing<White, Black, 2000>, AwaitingReplyF>,
   // Rapidly pulsing red when awaiting pickup after data received

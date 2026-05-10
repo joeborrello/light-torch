@@ -20,9 +20,10 @@ bool g_await_pickup   = false;  // true while MC_AWAIT_PICKUP — drives pulsing
 bool g_sent_flash     = false;  // true for 2s after transmission — drives rapid white flash layer
 bool g_awaiting_reply = false;  // true while MC_AWAITING_REPLY — drives slow white pulse layer
 bool g_sync_flash     = false;  // true for 500ms when sync mode toggles — drives green flash layer
-// Speed (deg/s) replayed from stored samples — drives blade style during MC_PLAYBACK
+// Speed (deg/s) replayed from stored samples
 float g_playback_speed = 0.0f;
 bool  g_in_playback    = false;
+bool  g_post_playback  = false;  // true after playback completes — drives fast-pulse "ready" standby
 // Directional tilt color components 0..1: p1>0=left(Red), p1<0=right(Blue), p2>0=forward(Green), p2<0=backward(Yellow=R+G)
 float g_tilt_color_r = 0.0f;
 float g_tilt_color_g = 0.0f;
@@ -228,7 +229,8 @@ public:
 
   // Allow starting from IDLE (normal) or PLAYBACK (auto-record response after playback)
   void StartRecording() {
-    if (state != MC_IDLE && state != MC_PLAYBACK) return;
+    if (state != MC_IDLE) return;
+    g_post_playback = false;
     state = MC_RECORDING;
     motion_sample_count  = 0;
     recording_start_time = millis();
@@ -342,25 +344,7 @@ public:
   uint32_t arp_interval_   = 200;
   int      arp_step_       = 0;
 
-  // Used during playback to replay stored motion with speed-mapped notes
-  void PlayNoteAtSpeed(float speed) {
-    static constexpr float pentatonic[20] = {
-      130.81f, 146.83f, 164.81f, 196.00f, 220.00f,
-      261.63f, 293.66f, 329.63f, 392.00f, 440.00f,
-      523.25f, 587.33f, 659.25f, 783.99f, 880.00f,
-     1046.50f,1174.66f,1318.51f,1567.98f,1760.00f
-    };
-    if (speed < MIN_SWING_SPEED) { arp_step_ = 0; arp_interval_ = 200; return; }
-    float t = (speed - MIN_SWING_SPEED) / (MAX_SWING_SPEED - MIN_SWING_SPEED);
-    if (t > 1.0f) t = 1.0f;
-    arp_interval_ = (uint32_t)(200.0f - t * 170.0f);
-    int base = (int)(t * 17.0f);
-    if (base > 17) base = 17;
-    beeper.Beep(arp_interval_ / 1000.0f, pentatonic[base + arp_step_]);
-    arp_step_ = (arp_step_ + 1) % 3;
-  }
-
-  // Used in live mode: tilt magnitude (0..1) drives pitch and arp rate
+  // Used in live mode and playback: tilt magnitude (0..1) drives pitch and arp rate
   void PlayNoteAtMagnitude(float magnitude) {
     static constexpr float pentatonic[20] = {
       130.81f, 146.83f, 164.81f, 196.00f, 220.00f,
@@ -445,24 +429,61 @@ public:
 
   void PlaybackLoop() {
     if (playback_index_ >= motion_sample_count) {
-      STDOUT.println("Playback complete — recording response");
-      StartRecording();
+      STDOUT.println("Playback complete — ready to record");
+      g_post_playback    = true;
+      first_motion_time_ = 0;
+      idle_still_start_  = 0;
+      state = MC_IDLE;
       return;
     }
 
     MotionPacket& p = motion_buffer[playback_index_];
     if (millis() - playback_start_ms_ < (uint32_t)p.timestamp) return;
 
-    float gy    = p.gyro_y / 100.0f;
-    float gz    = p.gyro_z / 100.0f;
-    float speed = sqrtf(gy * gy + gz * gz);
-    g_playback_speed = speed;
+    // Compute tilt color and magnitude from stored accel using receiver's calibration axes
+    if (calibrated_) {
+      Vec3  stored_g = NormVec3(Vec3(p.accel_x / 100.0f, p.accel_y / 100.0f, p.accel_z / 100.0f));
+      float p1 = stored_g.dot(tilt_axis_);
+      float p2 = stored_g.dot(tilt_axis2_);
+      float left_c     = p1 > 0.0f ? p1 / TILT_SENSITIVITY : 0.0f;
+      float right_c    = p1 < 0.0f ? -p1 / TILT_SENSITIVITY : 0.0f;
+      float forward_c  = p2 > 0.0f ? p2 / TILT_SENSITIVITY : 0.0f;
+      float backward_c = p2 < 0.0f ? -p2 / TILT_SENSITIVITY : 0.0f;
+      float r  = left_c + backward_c;
+      float gc = forward_c + backward_c;
+      float b  = right_c;
+      g_tilt_color_r   = r  > 1.0f ? 1.0f : r;
+      g_tilt_color_g   = gc > 1.0f ? 1.0f : gc;
+      g_tilt_color_b   = b  > 1.0f ? 1.0f : b;
+      float m = sqrtf(p1 * p1 + p2 * p2) / TILT_SENSITIVITY;
+      g_tilt_magnitude = m > 1.0f ? 1.0f : m;
 
-    uint32_t now = millis();
-    if (now - last_note_time_ >= arp_interval_) {
-      last_note_time_ = now;
-      PlayNoteAtSpeed(speed);
+      // SD card: select swing file by direction from stored accel
+      if (SFX_swing.files_found() > 0) {
+        int   dir = 0;
+        float mx  = 0.0f;
+        if (p1  > mx) { mx = p1;  dir = 0; }
+        if (-p1 > mx) { mx = -p1; dir = 1; }
+        if (p2  > mx) { mx = p2;  dir = 2; }
+        if (-p2 > mx) {            dir = 3; }
+        int idx    = dir + (g_tilt_magnitude > 0.5f ? 4 : 0);
+        int nfiles = (int)SFX_swing.files_found();
+        if (idx >= nfiles) idx = dir < nfiles ? dir : 0;
+        SFX_swing.Select(idx);
+      }
     }
+
+    // Beeper notes from stored tilt magnitude (SD card swing sounds can't be triggered during playback
+    // because ProffieOS swing events require live IMU motion on the receiving device)
+    uint32_t now = millis();
+    if (SFX_swing.files_found() == 0 && now - last_note_time_ >= arp_interval_) {
+      last_note_time_ = now;
+      PlayNoteAtMagnitude(g_tilt_magnitude);
+    }
+
+    float gy = p.gyro_y / 100.0f;
+    float gz = p.gyro_z / 100.0f;
+    g_playback_speed = sqrtf(gy * gy + gz * gz);
 
     playback_index_++;
   }
@@ -478,24 +499,18 @@ public:
     uint32_t now = millis();
 
     UpdateFilteredAccel();
-    UpdateTiltState();
+    // During playback, tilt globals are set from stored accel in PlaybackLoop() instead
+    if (state != MC_PLAYBACK) UpdateTiltState();
 
-    // Volume: 25%→100% of VOLUME with tilt magnitude; full volume before calibration or during playback
+    // Volume: 25%→100% of VOLUME with tilt magnitude; full volume before calibration
     {
-      float m;
-      if (!calibrated_) {
-        m = 1.0f;
-      } else if (state == MC_PLAYBACK) {
-        m = g_playback_speed / 600.0f;
-        if (m > 1.0f) m = 1.0f;
-      } else {
-        m = g_tilt_magnitude;
-      }
+      float m = !calibrated_ ? 1.0f : g_tilt_magnitude;
       dynamic_mixer.set_volume((int32_t)(VOLUME * (0.25f + m * 0.75f)));
     }
 
-    // Live notes: only when moving and no SD swing files present; suppressed during playback/waiting states
-    if (SFX_swing.files_found() == 0 && IsMoving() &&
+    // Live notes: only when device is moving and no SD swing files present; suppressed during waiting states
+    // (playback handles its own notes inside PlaybackLoop)
+    if (SFX_swing.files_found() == 0 && !IsStationary() &&
         state != MC_PLAYBACK && state != MC_AWAIT_PICKUP && state != MC_AWAITING_REPLY) {
       if (now - last_note_time_ >= arp_interval_) {
         last_note_time_ = now;
@@ -533,9 +548,9 @@ public:
 
     g_sync_flash = (now < sync_flash_end_ms_);
 
-    // SD card swing sound: direction-mapped (idx 0-3 = low, idx 4-7 = high at magnitude>0.5)
+    // SD card swing sound: direction-mapped (playback handles its own selection inside PlaybackLoop)
     // 0=left(01), 1=right(02), 2=forward(03), 3=backward(04), +4 for 05-08 at high magnitude
-    if (SFX_swing.files_found() > 0 && calibrated_) {
+    if (SFX_swing.files_found() > 0 && calibrated_ && state != MC_PLAYBACK) {
       Vec3  gv  = NormVec3(filtered_accel_);
       float p1  = gv.dot(tilt_axis_);
       float p2  = gv.dot(tilt_axis2_);
