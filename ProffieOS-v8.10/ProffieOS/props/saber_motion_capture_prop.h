@@ -19,7 +19,8 @@
 bool g_await_pickup   = false;  // true while MC_AWAIT_PICKUP — drives pulsing red layer
 bool g_sent_flash     = false;  // true for 2s after transmission — drives rapid white flash layer
 bool g_awaiting_reply = false;  // true while MC_AWAITING_REPLY — drives slow white pulse layer
-bool g_sync_flash     = false;  // true for 500ms when sync mode toggles — drives green flash layer
+bool g_sync_flash      = false;  // true for 450ms when entering sync mode — drives green entry flash
+bool g_sync_exit_flash = false;  // true for 450ms when exiting sync mode — drives yellow exit flash
 // Speed (deg/s) replayed from stored samples
 float g_playback_speed = 0.0f;
 bool  g_in_playback    = false;
@@ -88,7 +89,8 @@ public:
   uint32_t last_motion_time_    = 0;
   uint32_t dock_start_time_     = 0;
   uint32_t sent_flash_end_ms_   = 0;  // millis() at which g_sent_flash clears
-  uint32_t sync_flash_end_ms_   = 0;  // millis() at which g_sync_flash clears
+  uint32_t sync_flash_end_ms_      = 0;  // millis() at which g_sync_flash clears (entry)
+  uint32_t sync_exit_flash_end_ms_ = 0;  // millis() at which g_sync_exit_flash clears (exit)
   uint32_t waiting_start_ms_    = 0;  // when MC_AWAIT_PICKUP or MC_AWAITING_REPLY was entered
   uint32_t first_motion_time_   = 0;  // debounce: when sustained motion above RECORD_MIN_SPEED began
   uint32_t sync_trigger_start_  = 0;  // when continuous vigorous motion began for sync toggle
@@ -529,7 +531,8 @@ public:
     bool is_upside_down = calibrated_ &&
       NormVec3(filtered_accel_).dot(home_gravity_) < SYNC_INVERT_THRESHOLD;
     bool can_sync_toggle = (state == MC_IDLE || state == MC_AWAITING_REPLY ||
-                            state == MC_RECORDING || state == MC_WAITING_DOCK);
+                            state == MC_RECORDING || state == MC_WAITING_DOCK ||
+                            state == MC_AWAIT_PICKUP);
     if (can_sync_toggle && is_upside_down) {
       if (!sync_trigger_active_) {
         sync_trigger_active_ = true;
@@ -544,14 +547,19 @@ public:
         motion_sample_count  = 0;  // discard any motion buffered during the flip
         state                = MC_IDLE;
         idle_still_start_    = 0;
-        sync_flash_end_ms_   = now + 500;
+        if (sync_mode_) {
+          sync_flash_end_ms_      = now + 450;  // 3 green pulses — entered sync
+        } else {
+          sync_exit_flash_end_ms_ = now + 450;  // 3 yellow pulses — exited sync
+        }
         STDOUT.println(sync_mode_ ? "Sync mode ON" : "Sync mode OFF");
       }
     } else {
       sync_trigger_active_ = false;
     }
 
-    g_sync_flash = (now < sync_flash_end_ms_);
+    g_sync_flash      = (now < sync_flash_end_ms_);
+    g_sync_exit_flash = (now < sync_exit_flash_end_ms_);
 
     // SD card swing sound: direction-mapped (playback handles its own selection inside PlaybackLoop)
     // 0=left(01), 1=right(02), 2=forward(03), 3=backward(04), +4 for 05-08 at high magnitude

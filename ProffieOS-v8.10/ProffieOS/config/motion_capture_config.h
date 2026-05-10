@@ -66,6 +66,7 @@ extern bool  g_await_pickup;
 extern bool  g_sent_flash;
 extern bool  g_awaiting_reply;
 extern bool  g_sync_flash;
+extern bool  g_sync_exit_flash;
 extern bool  g_post_playback;
 extern float g_tilt_color_r;
 extern float g_tilt_color_g;
@@ -95,12 +96,20 @@ public:
   int calculate(BladeBase*) { return g_awaiting_reply ? 32768 : 0; }
 };
 
-// 500ms solid green flash when sync mode is toggled on or off
+// Three rapid green pulses (450ms) when entering sync mode
 class SyncFlashF {
 public:
   void run(BladeBase*) {}
-  int getInteger(int)   { return g_sync_flash ? 32768 : 0; }
+  int getInteger(int)       { return g_sync_flash ? 32768 : 0; }
   int calculate(BladeBase*) { return g_sync_flash ? 32768 : 0; }
+};
+
+// Three rapid yellow pulses (450ms) when exiting sync mode
+class SyncExitFlashF {
+public:
+  void run(BladeBase*) {}
+  int getInteger(int)       { return g_sync_exit_flash ? 32768 : 0; }
+  int calculate(BladeBase*) { return g_sync_exit_flash ? 32768 : 0; }
 };
 
 // Maps g_tilt_color_r/g/b directional components to a blade color
@@ -149,8 +158,10 @@ using MainStyle = Layers<
   AlphaL<Pulsing<Red, Black, 300>, AwaitPickupF>,
   // Rapid white flash for 2s immediately after transmission
   AlphaL<Pulsing<White, Black, 100>, SentFlashF>,
-  // Solid green flash for 500ms when sync mode toggles on or off
-  AlphaL<Green, SyncFlashF>,
+  // Three rapid green pulses when entering sync mode
+  AlphaL<Pulsing<Green, Black, 150>, SyncFlashF>,
+  // Three rapid yellow pulses when exiting sync mode
+  AlphaL<Pulsing<Rgb<255,255,0>, Black, 150>, SyncExitFlashF>,
   InOutTrL<TrWipe<300>, TrWipeIn<500>>
 >;
 
