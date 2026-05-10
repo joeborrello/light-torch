@@ -117,7 +117,7 @@ Hold the device **upside down** (inverted relative to its calibrated home orient
 
 ### Timeouts
 
-All waiting states (awaiting reply, awaiting pickup) time out to idle after 5 minutes.
+All waiting states (awaiting reply, awaiting pickup) time out to idle after 1 minute. A partial receive (start packet received but no end packet) times out after 30 seconds.
 
 ---
 

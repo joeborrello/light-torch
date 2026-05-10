@@ -83,6 +83,8 @@ Pure relay — receives UART packets from Proffie, forwards via ESP-NOW; receive
 | `MOTION_DEBOUNCE_MS` | 400 ms | Sustained motion required to trigger |
 | `STATIONARY_THRESHOLD` | 10 dps | Below this = stationary |
 | `SYNC_INVERT_THRESHOLD` | -0.7 | dot(filtered_accel, home_gravity) below this = upside down → sync toggle |
+| `REPLY_TIMEOUT_MS` | 60000 ms | Waiting states (awaiting reply, await pickup) reset to IDLE |
+| `RECEIVE_TIMEOUT_MS` | 30000 ms | Partial receive resets to IDLE if no end packet arrives |
 | `SYNC_HOLD_MS` | 3000 ms | Duration required to toggle sync |
 | `DOCK_SETTLE_MS` | 3000 ms | Stationary time before transmitting |
 | `MOTION_BUFFER_SIZE` | 1500 | Samples (30s at 50Hz) |

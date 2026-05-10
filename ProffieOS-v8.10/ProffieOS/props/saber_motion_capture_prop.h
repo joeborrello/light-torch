@@ -69,7 +69,8 @@ public:
   static constexpr uint32_t DOCK_SETTLE_MS        = 3000;           // stationary this long → transmit
   static constexpr uint32_t MOTION_STOP_MS        = 500;            // no motion this long → consider stopped
   static constexpr uint32_t MAX_RECORDING_MS      = 30000;          // safety cap
-  static constexpr uint32_t REPLY_TIMEOUT_MS      = 3 * 60 * 1000; // 3 minutes → reset to IDLE
+  static constexpr uint32_t REPLY_TIMEOUT_MS      = 60 * 1000;     // 1 minute → reset to IDLE
+  static constexpr uint32_t RECEIVE_TIMEOUT_MS    = 30 * 1000;     // 30 seconds → reset if no end packet
   static constexpr uint32_t MOTION_DEBOUNCE_MS    = 400;            // sustained motion required to trigger recording/playback
   static constexpr uint32_t SYNC_HOLD_MS           = 3000;           // sustained vigorous motion to toggle sync mode
   static constexpr uint32_t CALIBRATION_SETTLE_MS  = 5000;           // stationary this long (once at startup) → lock home orientation
@@ -395,6 +396,7 @@ public:
     switch (type) {
       case 0x07:  // PKT_START_RECEIVE
         motion_sample_count = 0;
+        waiting_start_ms_   = millis();
         state = MC_RECEIVING;
         STDOUT.println("Receive: incoming motion data");
         break;
@@ -646,6 +648,12 @@ public:
         break;
 
       case MC_RECEIVING:
+        if (millis() - waiting_start_ms_ >= RECEIVE_TIMEOUT_MS) {
+          STDOUT.println("Receive timed out — resetting");
+          motion_sample_count = 0;
+          idle_still_start_   = 0;
+          state = MC_IDLE;
+        }
         break;
 
       case MC_AWAIT_PICKUP:
