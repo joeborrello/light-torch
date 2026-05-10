@@ -70,7 +70,7 @@ public:
   static constexpr uint32_t REPLY_TIMEOUT_MS      = 3 * 60 * 1000; // 3 minutes → reset to IDLE
   static constexpr uint32_t MOTION_DEBOUNCE_MS    = 400;            // sustained motion required to trigger recording/playback
   static constexpr uint32_t SYNC_HOLD_MS           = 3000;           // sustained vigorous motion to toggle sync mode
-  static constexpr uint32_t CALIBRATION_SETTLE_MS  = 10000;          // stationary this long in IDLE → recalibrate home orientation
+  static constexpr uint32_t CALIBRATION_SETTLE_MS  = 5000;           // stationary this long (once at startup) → lock home orientation
   static constexpr float    ACCEL_FILTER_ALPHA      = 0.15f;          // low-pass weight for orientation smoothing
   static constexpr float    TILT_SENSITIVITY        = 0.4f;           // tilt magnitude (0..1) at which full response is reached (~24°)
   static constexpr float    STATIONARY_THRESHOLD   = 10.0f;          // deg/s — below this = stationary
@@ -368,7 +368,7 @@ public:
       523.25f, 587.33f, 659.25f, 783.99f, 880.00f,
      1046.50f,1174.66f,1318.51f,1567.98f,1760.00f
     };
-    if (magnitude < 0.02f) { arp_step_ = 0; arp_interval_ = 200; return; }
+    if (magnitude < 0.10f) { arp_step_ = 0; arp_interval_ = 200; return; }
     arp_interval_ = (uint32_t)(200.0f - magnitude * 150.0f);
     if (arp_interval_ < 50) arp_interval_ = 50;
     int note_idx = (int)(magnitude * 17.0f);
@@ -555,21 +555,23 @@ public:
 
     switch (state) {
       case MC_IDLE:
-        // Recalibrate home orientation whenever stationary for CALIBRATION_SETTLE_MS
-        if (IsStationary()) {
-          if (idle_still_start_ == 0) {
-            idle_still_start_ = now;
+        // One-time startup calibration: find first 5-second window of stillness and lock home orientation
+        if (!calibrated_) {
+          if (IsStationary()) {
+            if (idle_still_start_ == 0) {
+              idle_still_start_ = now;
+              cal_accel_sum_    = Vec3(0.0f);
+              cal_sample_count_ = 0;
+            }
+            cal_accel_sum_ += fusor.accel();
+            cal_sample_count_++;
+            if (now - idle_still_start_ >= CALIBRATION_SETTLE_MS)
+              CommitCalibration();  // sets calibrated_ = true, never runs again
+          } else {
+            idle_still_start_ = 0;
             cal_accel_sum_    = Vec3(0.0f);
             cal_sample_count_ = 0;
           }
-          cal_accel_sum_ += fusor.accel();
-          cal_sample_count_++;
-          if (now - idle_still_start_ >= CALIBRATION_SETTLE_MS)
-            CommitCalibration();  // resets idle_still_start_ to 0
-        } else {
-          idle_still_start_ = 0;
-          cal_accel_sum_    = Vec3(0.0f);
-          cal_sample_count_ = 0;
         }
 
         if (!sync_mode_) {
