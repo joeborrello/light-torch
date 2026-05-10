@@ -353,9 +353,10 @@ public:
      1046.50f,1174.66f,1318.51f,1567.98f,1760.00f
     };
     if (magnitude < 0.10f) { arp_step_ = 0; arp_interval_ = 200; return; }
-    arp_interval_ = (uint32_t)(200.0f - magnitude * 150.0f);
+    float curved = magnitude * magnitude;  // squaring spreads lower notes across more of the tilt range
+    arp_interval_ = (uint32_t)(200.0f - curved * 150.0f);
     if (arp_interval_ < 50) arp_interval_ = 50;
-    int note_idx = (int)(magnitude * 17.0f);
+    int note_idx = (int)(curved * 17.0f);
     if (note_idx > 17) note_idx = 17;
     if (note_idx < 0)  note_idx = 0;
     beeper.Beep(arp_interval_ / 1000.0f, pentatonic[note_idx + arp_step_]);
