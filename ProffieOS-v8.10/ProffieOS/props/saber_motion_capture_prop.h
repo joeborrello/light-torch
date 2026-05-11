@@ -93,10 +93,12 @@ public:
   uint32_t sync_flash_end_ms_      = 0;  // millis() at which g_sync_flash clears (entry)
   uint32_t sync_exit_flash_end_ms_ = 0;  // millis() at which g_sync_exit_flash clears (exit)
   uint32_t waiting_start_ms_    = 0;  // when MC_AWAIT_PICKUP or MC_AWAITING_REPLY was entered
+  uint32_t last_sd_sound_time_  = 0;  // last time an SD swing sound was triggered
   uint32_t first_motion_time_   = 0;  // debounce: when sustained motion above RECORD_MIN_SPEED began
   uint32_t sync_trigger_start_  = 0;  // when continuous vigorous motion began for sync toggle
-  bool     sync_mode_           = false;
-  bool     sync_trigger_active_ = false;
+  bool     sync_mode_              = false;
+  bool     sync_trigger_active_    = false;
+  bool     sync_must_return_upright_ = false;  // prevents re-triggering without returning to upright first
 
   // Orientation calibration
   Vec3     filtered_accel_   = {0.0f, 0.0f, 1.0f}; // low-pass filtered accelerometer
@@ -463,7 +465,6 @@ public:
       float m = sqrtf(p1 * p1 + p2 * p2) / TILT_SENSITIVITY;
       g_tilt_magnitude = m > 1.0f ? 1.0f : m;
 
-      // SD card: select swing file by direction from stored accel
       if (SFX_swing.files_found() > 0) {
         int   dir = 0;
         float mx  = 0.0f;
@@ -474,12 +475,18 @@ public:
         int idx    = dir + (g_tilt_magnitude > 0.5f ? 4 : 0);
         int nfiles = (int)SFX_swing.files_found();
         if (idx >= nfiles) idx = dir < nfiles ? dir : 0;
-        SFX_swing.Select(idx);
+        float curved = g_tilt_magnitude * g_tilt_magnitude;
+        uint32_t sd_interval = (uint32_t)(700.0f - curved * 300.0f);
+        if (sd_interval < 400) sd_interval = 400;
+        uint32_t now_sd = millis();
+        if (now_sd - last_sd_sound_time_ >= sd_interval) {
+          last_sd_sound_time_ = now_sd;
+          SFX_swing.Select(idx);
+          hybrid_font.PlayPolyphonic(&SFX_swing);
+        }
       }
     }
 
-    // Beeper notes from stored tilt magnitude (SD card swing sounds can't be triggered during playback
-    // because ProffieOS swing events require live IMU motion on the receiving device)
     uint32_t now = millis();
     if (SFX_swing.files_found() == 0 && now - last_note_time_ >= arp_interval_) {
       last_note_time_ = now;
@@ -535,20 +542,25 @@ public:
     bool can_sync_toggle = (state == MC_IDLE || state == MC_AWAITING_REPLY ||
                             state == MC_RECORDING || state == MC_WAITING_DOCK ||
                             state == MC_AWAIT_PICKUP);
-    if (can_sync_toggle && is_upside_down) {
+    // Clear the return-upright guard once the device is no longer upside down
+    if (sync_must_return_upright_ && !is_upside_down) {
+      sync_must_return_upright_ = false;
+    }
+    if (can_sync_toggle && is_upside_down && !sync_must_return_upright_) {
       if (!sync_trigger_active_) {
         sync_trigger_active_ = true;
         sync_trigger_start_  = now;
       } else if (now - sync_trigger_start_ >= SYNC_HOLD_MS) {
-        sync_mode_           = !sync_mode_;
-        sync_trigger_active_ = false;
-        g_await_pickup       = false;
-        g_sent_flash         = false;
-        g_awaiting_reply     = false;
-        first_motion_time_   = 0;
-        motion_sample_count  = 0;  // discard any motion buffered during the flip
-        state                = MC_IDLE;
-        idle_still_start_    = 0;
+        sync_mode_                = !sync_mode_;
+        sync_trigger_active_      = false;
+        sync_must_return_upright_ = true;  // next toggle requires returning to upright first
+        g_await_pickup            = false;
+        g_sent_flash              = false;
+        g_awaiting_reply          = false;
+        first_motion_time_        = 0;
+        motion_sample_count       = 0;  // discard any motion buffered during the flip
+        state                     = MC_IDLE;
+        idle_still_start_         = 0;
         if (sync_mode_) {
           sync_flash_end_ms_      = now + 450;  // 3 green pulses — entered sync
         } else {
@@ -563,9 +575,11 @@ public:
     g_sync_flash      = (now < sync_flash_end_ms_);
     g_sync_exit_flash = (now < sync_exit_flash_end_ms_);
 
-    // SD card swing sound: direction-mapped (playback handles its own selection inside PlaybackLoop)
+    // SD card swing sound: actively triggered when moving, direction-mapped.
+    // Uses PlayPolyphonic to bypass ProffieOS's swing event system (which requires fast motion).
     // 0=left(01), 1=right(02), 2=forward(03), 3=backward(04), +4 for 05-08 at high magnitude
-    if (SFX_swing.files_found() > 0 && calibrated_ && state != MC_PLAYBACK) {
+    if (SFX_swing.files_found() > 0 && calibrated_ && !IsStationary() &&
+        state != MC_PLAYBACK && state != MC_AWAIT_PICKUP && state != MC_AWAITING_REPLY) {
       Vec3  gv  = NormVec3(filtered_accel_);
       float p1  = gv.dot(tilt_axis_);
       float p2  = gv.dot(tilt_axis2_);
@@ -578,7 +592,14 @@ public:
       int idx    = dir + (g_tilt_magnitude > 0.5f ? 4 : 0);
       int nfiles = (int)SFX_swing.files_found();
       if (idx >= nfiles) idx = dir < nfiles ? dir : 0;
-      SFX_swing.Select(idx);
+      float curved = g_tilt_magnitude * g_tilt_magnitude;
+      uint32_t sd_interval = (uint32_t)(700.0f - curved * 300.0f);
+      if (sd_interval < 400) sd_interval = 400;
+      if (now - last_sd_sound_time_ >= sd_interval) {
+        last_sd_sound_time_ = now;
+        SFX_swing.Select(idx);
+        hybrid_font.PlayPolyphonic(&SFX_swing);
+      }
     }
 
     if (state != MC_TRANSMITTING) PollUART();
